@@ -1,140 +1,254 @@
-import requests
-import math
-import json
-from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs
+// File: package.json
+{
+  "name": "dex-simulator-react-app",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "react-scripts": "4.0.3",
+    "axios": "^0.21.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
 
-def get_pairs(token_address: str):
-    url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        return data.get('pairs', [])
-    else:
-        print(f"Error: Unable to fetch data. Status code: {response.status_code}")
-        return []
+// File: src/App.js
+import React, { useState } from 'react';
+import axios from 'axios';
+import './App.css';
 
-def calculate_total_liquidity(pairs):
-    return sum(float(pair.get('liquidity', {}).get('usd', 0)) for pair in pairs if float(pair.get('liquidity', {}).get('usd', 0)) > 0)
+function App() {
+  const [tokenAddress, setTokenAddress] = useState('');
+  const [tokenData, setTokenData] = useState(null);
+  const [simulationResult, setSimulationResult] = useState(null);
+  const [tradeAmount, setTradeAmount] = useState('');
+  const [error, setError] = useState('');
 
-class DEXSimulator:
-    def __init__(self, total_liquidity_usd, token_price, token_symbol):
-        self.token_symbol = token_symbol
-        self.base_symbol = "USD"
-        
-        # Calculate initial reserves
-        self.reserve_usd = total_liquidity_usd / 2
-        self.reserve_token = self.reserve_usd / token_price
-        self.k = self.reserve_usd * self.reserve_token
+  const getPairs = async (address) => {
+    try {
+      const response = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+      return response.data.pairs || [];
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setError('Error fetching token data. Please try again.');
+      return [];
+    }
+  };
 
-    def get_price(self):
-        return self.reserve_usd / self.reserve_token
+  const calculateTotalLiquidity = (pairs) => {
+    return pairs.reduce((sum, pair) => sum + parseFloat(pair.liquidity?.usd || 0), 0);
+  };
 
-    def simulate_buy(self, usd_amount):
-        old_price = self.get_price()
-        new_reserve_usd = self.reserve_usd + usd_amount
-        new_reserve_token = self.k / new_reserve_usd
-        tokens_out = self.reserve_token - new_reserve_token
+  const getTokenData = async () => {
+    const pairs = await getPairs(tokenAddress);
+    if (pairs.length === 0) {
+      setError('No data found for this token address.');
+      return;
+    }
 
-        self.reserve_usd = new_reserve_usd
-        self.reserve_token = new_reserve_token
+    const totalLiquidity = calculateTotalLiquidity(pairs);
+    const tokenPrice = parseFloat(pairs[0].priceUsd || 0);
+    const tokenSymbol = pairs[0].baseToken?.symbol;
 
-        new_price = self.get_price()
-        price_change_ratio = new_price / old_price
+    setTokenData({ totalLiquidity, tokenPrice, tokenSymbol });
+    setError('');
+  };
 
-        return {
-            "action": "buy",
-            "tokens_received": tokens_out,
-            "usd_spent": usd_amount,
-            "old_price": old_price,
-            "new_price": new_price,
-            "price_change_ratio": price_change_ratio
-        }
+  const simulateTrade = () => {
+    if (!tokenData) {
+      setError('Please fetch token data first.');
+      return;
+    }
 
-    def simulate_sell(self, token_amount):
-        old_price = self.get_price()
-        new_reserve_token = self.reserve_token + token_amount
-        new_reserve_usd = self.k / new_reserve_token
-        usd_out = self.reserve_usd - new_reserve_usd
+    const { totalLiquidity, tokenPrice, tokenSymbol } = tokenData;
+    const sim = new DEXSimulator(totalLiquidity, tokenPrice, tokenSymbol);
+    const amount = parseFloat(tradeAmount);
 
-        self.reserve_usd = new_reserve_usd
-        self.reserve_token = new_reserve_token
+    let result;
+    if (amount > 0) {
+      result = sim.simulateBuy(amount);
+    } else {
+      result = sim.simulateSell(-amount);
+    }
 
-        new_price = self.get_price()
-        price_change_ratio = new_price / old_price
+    const priceChange = (result.price_change_ratio - 1) * 100;
+    const xFactor = calculateXFactor(result.price_change_ratio);
 
-        return {
-            "action": "sell",
-            "usd_received": usd_out,
-            "tokens_spent": token_amount,
-            "old_price": old_price,
-            "new_price": new_price,
-            "price_change_ratio": price_change_ratio
-        }
+    setSimulationResult({ ...result, priceChange, xFactor });
+  };
 
-def format_price(price):
-    return f"${price:.8f}" if price < 1 else f"${price:.2f}"
+  class DEXSimulator {
+    constructor(totalLiquidityUsd, tokenPrice, tokenSymbol) {
+      this.tokenSymbol = tokenSymbol;
+      this.baseSymbol = "USD";
+      this.reserveUsd = totalLiquidityUsd / 2;
+      this.reserveToken = this.reserveUsd / tokenPrice;
+      this.k = this.reserveUsd * this.reserveToken;
+    }
 
-def get_token_data(token_address):
-    pairs = get_pairs(token_address)
-    if not pairs:
-        return None, None, None
+    getPrice() {
+      return this.reserveUsd / this.reserveToken;
+    }
 
-    total_liquidity = calculate_total_liquidity(pairs)
-    token_price = float(pairs[0].get('priceUsd', 0))
-    token_symbol = pairs[0].get('baseToken', {}).get('symbol')
+    simulateBuy(usdAmount) {
+      const oldPrice = this.getPrice();
+      const newReserveUsd = this.reserveUsd + usdAmount;
+      const newReserveToken = this.k / newReserveUsd;
+      const tokensOut = this.reserveToken - newReserveToken;
 
-    return total_liquidity, token_price, token_symbol
+      this.reserveUsd = newReserveUsd;
+      this.reserveToken = newReserveToken;
 
-def calculate_x_factor(price_change_ratio):
-    if price_change_ratio >= 1:
-        return price_change_ratio
-    else:
-        return -1 / price_change_ratio
+      const newPrice = this.getPrice();
+      const priceChangeRatio = newPrice / oldPrice;
 
-def simulate_trade(token_address, amount):
-    total_liquidity, token_price, token_symbol = get_token_data(token_address)
+      return {
+        action: "buy",
+        tokensReceived: tokensOut,
+        usdSpent: usdAmount,
+        oldPrice,
+        newPrice,
+        price_change_ratio: priceChangeRatio
+      };
+    }
 
-    if total_liquidity and token_price and token_symbol:
-        sim = DEXSimulator(total_liquidity, token_price, token_symbol)
+    simulateSell(tokenAmount) {
+      const oldPrice = this.getPrice();
+      const newReserveToken = this.reserveToken + tokenAmount;
+      const newReserveUsd = this.k / newReserveToken;
+      const usdOut = this.reserveUsd - newReserveUsd;
 
-        if amount > 0:
-            result = sim.simulate_buy(amount)
-        else:
-            result = sim.simulate_sell(-amount)
+      this.reserveUsd = newReserveUsd;
+      this.reserveToken = newReserveToken;
 
-        price_change = (result['price_change_ratio'] - 1) * 100
-        x_factor = calculate_x_factor(result['price_change_ratio'])
+      const newPrice = this.getPrice();
+      const priceChangeRatio = newPrice / oldPrice;
 
-        return {
-            "total_liquidity": total_liquidity,
-            "token_price": token_price,
-            "token_symbol": token_symbol,
-            "simulation_result": result,
-            "price_change_percent": price_change,
-            "x_factor": x_factor
-        }
-    else:
-        return {"error": "Unable to fetch token data or run simulation."}
+      return {
+        action: "sell",
+        usdReceived: usdOut,
+        tokensSpent: tokenAmount,
+        oldPrice,
+        newPrice,
+        price_change_ratio: priceChangeRatio
+      };
+    }
+  }
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
+  const calculateXFactor = (priceChangeRatio) => {
+    return priceChangeRatio >= 1 ? priceChangeRatio : -1 / priceChangeRatio;
+  };
 
-        # Parse query parameters
-        query_components = parse_qs(self.path.split('?')[-1])
-        token_address = query_components.get('token_address', [''])[0]
-        amount = float(query_components.get('amount', ['0'])[0])
+  const formatPrice = (price) => {
+    return price < 1 ? `$${price.toFixed(8)}` : `$${price.toFixed(2)}`;
+  };
 
-        if not token_address:
-            self.wfile.write(json.dumps({"error": "Missing token_address parameter"}).encode())
-            return
+  return (
+    <div className="App">
+      <h1>DEX Simulator</h1>
+      <div>
+        <input
+          type="text"
+          value={tokenAddress}
+          onChange={(e) => setTokenAddress(e.target.value)}
+          placeholder="Enter token address"
+        />
+        <button onClick={getTokenData}>Fetch Token Data</button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {tokenData && (
+        <div>
+          <h2>Token Information</h2>
+          <p>Total liquidity: ${tokenData.totalLiquidity.toFixed(2)}</p>
+          <p>Current {tokenData.tokenSymbol} price: {formatPrice(tokenData.tokenPrice)}</p>
+          <div>
+            <input
+              type="number"
+              value={tradeAmount}
+              onChange={(e) => setTradeAmount(e.target.value)}
+              placeholder="Enter amount to trade (+ for buy, - for sell)"
+            />
+            <button onClick={simulateTrade}>Simulate Trade</button>
+          </div>
+        </div>
+      )}
+      {simulationResult && (
+        <div>
+          <h2>Simulation Results</h2>
+          <p>Action: {simulationResult.action}</p>
+          <p>{simulationResult.action === 'buy' ? 'Tokens received' : 'USD received'}: {simulationResult.action === 'buy' ? simulationResult.tokensReceived.toFixed(8) : formatPrice(simulationResult.usdReceived)}</p>
+          <p>{simulationResult.action === 'buy' ? 'USD spent' : 'Tokens spent'}: {simulationResult.action === 'buy' ? formatPrice(simulationResult.usdSpent) : simulationResult.tokensSpent.toFixed(8)}</p>
+          <p>Old price: {formatPrice(simulationResult.oldPrice)}</p>
+          <p>New price: {formatPrice(simulationResult.newPrice)}</p>
+          <p>Price change: {simulationResult.priceChange.toFixed(6)}% ({simulationResult.xFactor.toFixed(6)}X)</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
-        result = simulate_trade(token_address, amount)
-        self.wfile.write(json.dumps(result).encode())
+export default App;
 
-# This line is not needed for Vercel deployment
-# if __name__ == "__main__":
-#     main()
+// File: src/App.css
+.App {
+  font-family: Arial, sans-serif;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+input, button {
+  margin: 10px 0;
+  padding: 5px;
+}
+
+.error {
+  color: red;
+}
+
+// File: public/index.html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="DEX Simulator React App"
+    />
+    <title>DEX Simulator</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
+
+// File: .gitignore
+node_modules
+build
+.env
